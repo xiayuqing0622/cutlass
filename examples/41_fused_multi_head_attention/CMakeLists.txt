@@ -40,7 +40,7 @@ cutlass_example_add_executable(
 cutlass_example_add_executable(
   41_fused_multi_head_attention_backward
   fused_multi_head_attention_backward.cu
-  DISABLE_TESTS ON
+  DISABLE_TESTS OFF
   )
 
 

@@ -88,6 +88,8 @@
 /////////////////////////////////////////////////////////////////////////////////////////////////
 
 #include <vector>
+#include <iostream>
+#include <fstream>
 
 #include "cutlass/cutlass.h"
 #include "cutlass/gemm/gemm.h"
@@ -119,6 +121,9 @@
 #include "cutlass/epilogue/threadblock/epilogue_with_visitor.h"
 #include "cutlass/fast_math.h"
 #include "kernel_forward.h"
+
+#include "cutlass/util/device_memory.h"
+#include "cutlass/util/host_tensor.h"
 
 /////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -1004,13 +1009,13 @@ template <
 int run_attention(Options& options) {
   using Attention = AttentionKernel<
     cutlass::half_t,      // scalar_t
-    cutlass::arch::Sm80,  // ArchTag
+    cutlass::arch::Sm70,  // ArchTag
     true,                 // Memory is aligned
     kQueriesPerBlock,
     kKeysPerBlock,
     kSingleValueIteration,
     false,                // Supports dropout
-    false                 // Supports bias
+    true                 // Supports bias
   >;
 
   //

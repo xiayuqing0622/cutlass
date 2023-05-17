@@ -12,8 +12,8 @@ args = parser.parse_args()
 
 torch.manual_seed(0)
 dtype = torch.float16
-B, Mq, Mkv, H, K, Kv = 2, 1024, 1024, 5, 128, 128
-causal = True
+B, Mq, Mkv, H, K, Kv = 2, 2048, 2048, 8, 64, 64
+causal = False
 repeat_count = 100
 
 ATOL = {
@@ -43,16 +43,18 @@ def create_lower_triangular_mask():
         fill_value=float("-inf"),
     ), diagonal=1)
 
-def ref_mha_bmk(q, k, v, mask):
+def ref_mha_bmk(q, k, v, bias, mask):
     # Multi-head attention with inputs/outputs in BMK format
     q = q.float()
     k = k.float()
     v = v.float()
-
+    bias = bias.float()
     q = q * (1 / q.shape[-1] ** 0.5)
     attn = q @ k.transpose(-2, -1)
     if mask is not None:
         attn += mask
+    if bias is not None:
+        attn += bias
     attn_max = attn.max(-1, True).values
     attn_norm = (attn - attn_max).exp().sum(-1, True)
     attn = attn.softmax(-1)
@@ -65,26 +67,29 @@ def bmhk2bmk(t):
     return t.permute((0, 2, 1, 3)).reshape(
         [t.shape[0] * t.shape[2], t.shape[1], t.shape[3]]
     )
-
-def ref_mha_bmhk(q, k, v, mask):
+def bhmn2bmn(t):
+    return t.permute((0,1,2,3)).reshape([t.shape[0] * t.shape[1], t.shape[2], t.shape[3]])
+def ref_mha_bmhk(q, k, v, bias, mask):
     # Multi-head attention with inputs/outputs in BMHK format
     assert q.ndim == 4
 
-    out, lse = ref_mha_bmk(bmhk2bmk(q), bmhk2bmk(k), bmhk2bmk(v), mask=mask)
+    out, lse = ref_mha_bmk(bmhk2bmk(q), bmhk2bmk(k), bmhk2bmk(v), bhmn2bmn(bias),mask=mask)
     out = out.reshape([q.shape[0], q.shape[2], q.shape[1], v.shape[3]])
     return out.permute((0, 2, 1, 3)), lse.reshape([q.shape[0], q.shape[2], q.shape[1]])
 
-def ref_mha_bw_bmhk(q, k, v, mask, lse, out, grad_out, delta):
+def ref_mha_bw_bmhk(q, k, v, bias, mask, lse, out, grad_out, delta):
     lse = lse[:, :, :q.shape[1]]  #BMH, unpad Q dimension
     delta = delta.reshape([-1, delta.shape[-1], 1])
 
     # bmhk -> bmk
     q, k, v, out, grad_out = [bmhk2bmk(x).float() for x in (q, k, v, out, grad_out)]
-
+    bias = bhmn2bmn(bias).float()
     attn_T = k @ q.transpose(-2, -1)
     if mask is not None:
         attn_T += mask.transpose(-2, -1)
     attn_T = attn_T * (1 / q.shape[-1] ** 0.5)
+    if bias is not None:
+        attn_T += bias.transpose(-2, -1)
     attn_T = attn_T - lse.reshape([-1, 1, lse.shape[-1]])
     attn_T = attn_T.exp()
 
@@ -92,27 +97,29 @@ def ref_mha_bw_bmhk(q, k, v, mask, lse, out, grad_out, delta):
 
     dov = grad_out @ v.transpose(-2, -1)
     tmp = (dov - delta) * attn_T.transpose(-2, -1)
+    grad_b = tmp
     tmp = tmp / (q.shape[-1] ** 0.5)
-
     grad_q = tmp @ k
     grad_k = tmp.transpose(-2, -1) @ q
 
-    return [x.reshape([B, H, x.shape[1], x.shape[-1]]).permute([0, 2, 1, 3]) for x in [grad_q, grad_k, grad_v]]
+    return [x.reshape([B, H, x.shape[1], x.shape[-1]]).permute([0, 2, 1, 3]) for x in [grad_q, grad_k, grad_v]] + [grad_b.reshape(B, H, Mq, Mkv).permute(0, 1, 2, 3)]
 
 
 print("initializing tensors...")
 query = torch.randn([B, Mq, H, K], dtype=dtype)
 key = 3 * torch.randn([B, Mkv, H, K], dtype=dtype)
 value = 3 * torch.randn([B, Mkv, H, Kv], dtype=dtype)
+bias = torch.randn([B, H, Mq, Mkv], dtype=dtype)
 mask = create_lower_triangular_mask() if causal else None
 
 # let PyTorch compute gradients
 query.requires_grad_(True)
 key.requires_grad_(True)
 value.requires_grad_(True)
+bias.requires_grad_(True)
 
 print("computing fw...")
-out, lse = ref_mha_bmhk(query, key, value, mask=mask)
+out, lse = ref_mha_bmhk(query, key, value, bias, mask=mask)
 out = out.to(dtype).contiguous()
 grad_out = 3 * torch.randn([B, Mq, H, Kv], dtype=dtype)
 
@@ -127,8 +134,7 @@ pad_amount = (32 - (lse.shape[2] % 32)) % 32
 lse = torch.nn.functional.pad(lse, [0, pad_amount], value=math.inf)
 
 print("computing bw with reference implem...")
-gQr, gKr, gVr = ref_mha_bw_bmhk(query, key, value, mask, lse, out, grad_out, delta)
-
+gQr, gKr, gVr, gBr = ref_mha_bw_bmhk(query, key, value, bias, mask, lse, out, grad_out, delta)
 with PipedSubprocess(fmha_bw_binary) as bw_kernel:
     # Send kernel arguments
     bw_kernel.write(
@@ -141,11 +147,13 @@ with PipedSubprocess(fmha_bw_binary) as bw_kernel:
         "num_heads", H,
         "custom_mask_type", (1 if causal else 0),
         "num_batches", B,
+        "gB_strideM", Mkv,
         "repeat_count", repeat_count,
     )
     bw_kernel.writeTensor(query, "query", ["q_strideB", "q_strideM", "q_strideH"])
     bw_kernel.writeTensor(key, "key", ["k_strideB", "k_strideM", "k_strideH"])
     bw_kernel.writeTensor(value, "value", ["v_strideB", "v_strideM", "v_strideH"])
+    bw_kernel.writeTensor(bias, "bias", ["bias_strideB", "bias_strideH", "bias_strideM"])
     bw_kernel.writeTensor(lse, "logsumexp", ["lse_strideB", "lse_strideH"])
     bw_kernel.writeTensor(out, "output", ["o_strideB", "o_strideM", "o_strideH"])
     bw_kernel.writeTensor(grad_out, "grad_output", ["gO_strideB", "gO_strideM", "gO_strideH"])
@@ -160,6 +168,7 @@ with PipedSubprocess(fmha_bw_binary) as bw_kernel:
     gQ = bw_kernel.readTensor("grad_query", ["gQ_strideB", "gQ_strideM", "gQ_strideH"], query.shape).float()
     gK = bw_kernel.readTensor("grad_key", ["gK_strideB", "gK_strideM", "gK_strideH"], key.shape).float()
     gV = bw_kernel.readTensor("grad_value", ["gV_strideB", "gV_strideM", "gV_strideH"], value.shape).float()
+    gB = bw_kernel.readTensor("grad_bias", ["gB_strideB", "gB_strideH", "gB_strideM"], bias.shape).float()
     runtime_ms = float(bw_kernel.readNamed("runtime_ms"))
 
 float_ops = B * H * sum([
@@ -190,10 +199,11 @@ Fused multi-head attention - backward
         grad_query: {"PASS" if torch.allclose(gQ, gQr, rtol=RTOL, atol=ATOL) else "FAIL"} (delta: {(gQ - gQr).abs().max()})
         grad_key:   {"PASS" if torch.allclose(gK, gKr, rtol=RTOL, atol=ATOL) else "FAIL"} (delta: {(gK - gKr).abs().max()})
         grad_value: {"PASS" if torch.allclose(gV, gVr, rtol=RTOL, atol=ATOL) else "FAIL"} (delta: {(gV - gVr).abs().max()})
+         grad_bias: {"PASS" if torch.allclose(gB, gBr, rtol=RTOL, atol=ATOL) else "FAIL"} (delta: {(gB - gBr).abs().max()})
         (atol={ATOL} / rtol={RTOL})
     Runtime: {runtime_ms}ms ({(float_ops / (1024 ** 4)) / (runtime_ms / 1000):.4f} TFlops)
 """)
-
 assert torch.allclose(query.grad.float(), gQr, rtol=RTOL, atol=ATOL), "Reference implementation does not match PyTorch autograd!"
 assert torch.allclose(key.grad.float(), gKr, rtol=RTOL, atol=ATOL), "Reference implementation does not match PyTorch autograd!"
 assert torch.allclose(value.grad.float(), gVr, rtol=RTOL, atol=ATOL), "Reference implementation does not match PyTorch autograd!"
+assert torch.allclose(bias.grad.float(), gBr, rtol=RTOL, atol=ATOL), "Reference implementation does not match PyTorch autograd!"

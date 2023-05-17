@@ -41,7 +41,7 @@
 #include "cutlass/util/host_tensor.h"
 
 
-using Arch = cutlass::arch::Sm80;
+using Arch = cutlass::arch::Sm70;
 static constexpr int kMaxK = 128;
 
 template <typename ArchTag, typename Element, int kMaxK>
@@ -147,6 +147,10 @@ void writeTensor(std::string const& name, cutlass::HostTensor<Element, cutlass::
 void writeInt64(std::string const& name, int64_t value) {
     std::cout << name << " " << value << std::endl;
 }
+
+void writeInt32(std::string const& name, int32_t value) {
+    std::cout << name << " " << value << std::endl;
+}
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////////////
@@ -180,11 +184,19 @@ int runKernel() {
     READ_I64(num_heads);
     READ_I64(custom_mask_type);
     READ_I64(num_batches);
+    READ_I64(gB_strideM);
     int64_t repeat_count = readInt64("repeat_count");
 
     READ_TENSOR_AND_STRIDES_BMH(Element, query, q);
     READ_TENSOR_AND_STRIDES_BMH(Element, key, k);
     READ_TENSOR_AND_STRIDES_BMH(Element, value, v);
+
+    auto bias = readTensorOnDevice<Element>("bias");
+    p.bias_ptr = bias.device_data();
+    p.bias_strideB = READ_I64(bias_strideB);
+    p.bias_strideH = READ_I64(bias_strideH);
+    p.bias_strideM = READ_I64(bias_strideM);
+
     auto lse = readTensorOnDevice<typename Kernel::lse_scalar_t>("logsumexp");
     p.logsumexp_ptr = lse.device_data();
     p.lse_strideB = readInt64("lse_strideB");
@@ -212,7 +224,6 @@ int runKernel() {
     if (p.workspace_size()) {
         cudaMalloc(&p.workspace, p.workspace_size());
     }
-
     // Allocate outputs in BMHK format
     p.gQKV_strideM_multiplier = 1;
     p.gQ_strideH = p.head_dim;
@@ -221,13 +232,17 @@ int runKernel() {
     p.gK_strideB = p.gK_strideM() * p.num_keys;
     p.gV_strideH = p.head_dim_value;
     p.gV_strideB = p.gV_strideM() * p.num_keys;
+    p.gB_strideH = p.gB_strideM * p.num_queries;
+    p.gB_strideB = p.gB_strideH * p.num_heads;
 
     cutlass::HostTensor<Element, cutlass::layout::RowMajor> gQ({int64_t(1), p.gQ_strideB * p.num_batches});
     cutlass::HostTensor<Element, cutlass::layout::RowMajor> gK({int64_t(1), p.gK_strideB * p.num_batches});
     cutlass::HostTensor<Element, cutlass::layout::RowMajor> gV({int64_t(1), p.gV_strideB * p.num_batches});
+    cutlass::HostTensor<Element, cutlass::layout::RowMajor> gB({int64_t(1), p.gB_strideB * p.num_batches});
     p.grad_query_ptr = gQ.device_data();
     p.grad_key_ptr = gK.device_data();
     p.grad_value_ptr = gV.device_data();
+    p.grad_bias_ptr = gB.device_data();
 
     if (!Kernel::check_supported(p)) {
       std::cerr << "FATAL: Kernel does not support these inputs" << std::endl;
@@ -255,6 +270,10 @@ int runKernel() {
     writeInt64("gV_strideB", p.gV_strideB);
     writeInt64("gV_strideM", p.gV_strideM());
     writeInt64("gV_strideH", p.gV_strideH);
+    writeTensor("grad_bias", gB);
+    writeInt64("gB_strideB", p.gB_strideB);
+    writeInt64("gB_strideH", p.gB_strideH);
+    writeInt32("gB_strideM", p.gB_strideM);
 
     // Timing
     cudaEvent_t events[2];

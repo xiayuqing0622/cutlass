@@ -1067,7 +1067,7 @@ template <
 int run_grouped(Options& options) {
   using AttentionKernel = typename cutlass::gemm::kernel::DefaultFMHAGrouped<
     cutlass::half_t,      // scalar_t
-    cutlass::arch::Sm80,  // ArchTag
+    cutlass::arch::Sm70,  // ArchTag
     true,                 // Memory is aligned
     kQueriesPerBlock,
     kKeysPerBlock,
