@@ -31,9 +31,9 @@ RTOL = {
 
 assert not (causal and Mq < Mkv), "causal only supports seqlenK <= seqlenQ"
 
-fmha_bw_binary = args.example_exe
-if not os.path.isfile(fmha_bw_binary):
-    print(f"""No such file: `{fmha_bw_binary}`\nDid you forget to run "make 41_fused_multi_head_attention"?""")
+fmha_fw_binary = args.example_exe
+if not os.path.isfile(fmha_fw_binary):
+    print(f"""No such file: `{fmha_fw_binary}`\nDid you forget to run "make 41_fused_multi_head_attention"?""")
     sys.exit(1)
 
 def create_lower_triangular_mask():
@@ -120,26 +120,15 @@ value.requires_grad_(True)
 bias.requires_grad_(True)
 
 print("computing fw...")
-out, lse = ref_mha_bmhk(query, key, value, bias, mask=mask)
-out = out.to(dtype).contiguous()
-print("q", query, "k", key, "v", value, "bias", bias, "out", out)
-grad_out = 3 * torch.randn([B, Mq, H, Kv], dtype=dtype)
+outr, lser = ref_mha_bmhk(query, key, value, bias, mask=mask)
 
-print("computing bw with autograd...")
-out.backward(grad_out)
+
 scale = (1 / query.shape[-1] ** 0.5)
 
 
-# Additional data needed by the kernel
-delta = (grad_out.float() * out.float()).sum(-1).transpose(-2, -1).contiguous()
-pad_amount = (32 - (lse.shape[2] % 32)) % 32
-lse = torch.nn.functional.pad(lse, [0, pad_amount], value=math.inf)
-
-print("computing bw with reference implem...")
-gQr, gKr, gVr, gBr = ref_mha_bw_bmhk(query, key, value, bias, mask, lse, out, grad_out, delta)
-with PipedSubprocess(fmha_bw_binary) as bw_kernel:
+with PipedSubprocess(fmha_fw_binary) as fw_kernel:
     # Send kernel arguments
-    bw_kernel.write(
+    fw_kernel.write(
         TORCH_DTYPE_NAME[query.dtype],
         "scale", scale,
         "head_dim", K,
@@ -149,30 +138,22 @@ with PipedSubprocess(fmha_bw_binary) as bw_kernel:
         "num_heads", H,
         "custom_mask_type", (1 if causal else 0),
         "num_batches", B,
-        "gB_strideM", Mkv,
         "repeat_count", repeat_count,
     )
-    bw_kernel.writeTensor(query, "query", ["q_strideB", "q_strideM", "q_strideH"])
-    bw_kernel.writeTensor(key, "key", ["k_strideB", "k_strideM", "k_strideH"])
-    bw_kernel.writeTensor(value, "value", ["v_strideB", "v_strideM", "v_strideH"])
-    bw_kernel.writeTensor(bias, "bias", ["bias_strideB", "bias_strideH", "bias_strideM"])
-    bw_kernel.writeTensor(lse, "logsumexp", ["lse_strideB", "lse_strideH"])
-    bw_kernel.writeTensor(out, "output", ["o_strideB", "o_strideM", "o_strideH"])
-    bw_kernel.writeTensor(grad_out, "grad_output", ["gO_strideB", "gO_strideM", "gO_strideH"])
-    bw_kernel.writeTensor(delta, "delta", ["delta_strideB", "delta_strideH"])
+    fw_kernel.writeTensor(query, "query", ["q_strideB", "q_strideM", "q_strideH"])
+    fw_kernel.writeTensor(key, "key", ["k_strideB", "k_strideM", "k_strideH"])
+    fw_kernel.writeTensor(value, "value", ["v_strideB", "v_strideM", "v_strideH"])
+    fw_kernel.writeTensor(bias, "bias", ["bias_strideB", "bias_strideH", "bias_strideM"])
 
-    if bw_kernel.read() != "OK":
+    if fw_kernel.read() != "OK":
         print("Got unexpected output")
-        print(bw_kernel.subp.communicate()[0])
+        print(fw_kernel.subp.communicate()[0])
         sys.exit(0)
 
     # Read kernel output
-    gQ = bw_kernel.readTensor("grad_query", ["gQ_strideB", "gQ_strideM", "gQ_strideH"], query.shape).float()
-    gK = bw_kernel.readTensor("grad_key", ["gK_strideB", "gK_strideM", "gK_strideH"], key.shape).float()
-    gV = bw_kernel.readTensor("grad_value", ["gV_strideB", "gV_strideM", "gV_strideH"], value.shape).float()
-    gB = bw_kernel.readTensor("grad_bias", ["gB_strideB", "gB_strideH", "gB_strideM"], bias.shape).float()
-    runtime_ms = float(bw_kernel.readNamed("runtime_ms"))
-
+    output = fw_kernel.readTensor("output", ["o_strideB", "o_strideM", "o_strideH"], outr.shape).float()
+    lse = fw_kernel.readTensor("lse", ["lse_strideB", "lse_strideH"], lser.shape).float()
+    runtime_ms = float(fw_kernel.readNamed("runtime_ms"))
 
 print(f"""
 Fused multi-head attention - backward
@@ -184,14 +165,10 @@ Fused multi-head attention - backward
     head_dim_value={Kv}
 
     Correctness:
-        grad_query: {"PASS" if torch.allclose(gQ, gQr, rtol=RTOL, atol=ATOL) else "FAIL"} (delta: {(gQ - gQr).abs().max()})
-        grad_key:   {"PASS" if torch.allclose(gK, gKr, rtol=RTOL, atol=ATOL) else "FAIL"} (delta: {(gK - gKr).abs().max()})
-        grad_value: {"PASS" if torch.allclose(gV, gVr, rtol=RTOL, atol=ATOL) else "FAIL"} (delta: {(gV - gVr).abs().max()})
-         grad_bias: {"PASS" if torch.allclose(gB, gBr, rtol=RTOL, atol=ATOL) else "FAIL"} (delta: {(gB - gBr).abs().max()})
+        output: {"PASS" if torch.allclose(output, outr, rtol=RTOL, atol=ATOL) else "FAIL"} (delta: {(output - outr).abs().max()})
+        lse:   {"PASS" if torch.allclose(lse, lser, rtol=RTOL, atol=ATOL) else "FAIL"} (delta: {(lse - lser).abs().max()})
         (atol={ATOL} / rtol={RTOL})
-    Runtime: {runtime_ms}ms ({(float_ops / (1024 ** 4)) / (runtime_ms / 1000):.4f} TFlops)
+    Runtime: {runtime_ms}ms
 """)
-assert torch.allclose(query.grad.float(), gQr, rtol=RTOL, atol=ATOL), "Reference implementation does not match PyTorch autograd!"
-assert torch.allclose(key.grad.float(), gKr, rtol=RTOL, atol=ATOL), "Reference implementation does not match PyTorch autograd!"
-assert torch.allclose(value.grad.float(), gVr, rtol=RTOL, atol=ATOL), "Reference implementation does not match PyTorch autograd!"
-assert torch.allclose(bias.grad.float(), gBr, rtol=RTOL, atol=ATOL), "Reference implementation does not match PyTorch autograd!"
+
+

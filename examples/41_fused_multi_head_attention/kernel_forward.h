@@ -104,7 +104,7 @@ template <
     bool kSingleValueIteration_, // = `value.shape[-1] <= kKeysPerBlock`
     // This is quite slower on V100 for some reason
     // Set to false if you know at compile-time you will never need dropout
-    bool kSupportsDropout_ = true,
+    bool kSupportsDropout_ = false,
     bool kSupportsBias_ = true>
 struct AttentionKernel {
   enum CustomMaskType {
@@ -181,6 +181,10 @@ struct AttentionKernel {
     int32_t bias_strideM = 0;
 
     int32_t o_strideM = 0;
+    int32_t o_strideB;
+    int32_t o_strideH;
+    int32_t lse_strideB;
+    int32_t lse_strideH;
 
     // Everything below is only used in `advance_to_block`
     // and shouldn't use registers
