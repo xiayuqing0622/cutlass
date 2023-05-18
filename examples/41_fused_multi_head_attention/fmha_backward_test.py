@@ -122,7 +122,6 @@ bias.requires_grad_(True)
 print("computing fw...")
 out, lse = ref_mha_bmhk(query, key, value, bias, mask=mask)
 out = out.to(dtype).contiguous()
-print("q", query, "k", key, "v", value, "bias", bias, "out", out)
 grad_out = 3 * torch.randn([B, Mq, H, Kv], dtype=dtype)
 
 print("computing bw with autograd...")
@@ -189,7 +188,7 @@ Fused multi-head attention - backward
         grad_value: {"PASS" if torch.allclose(gV, gVr, rtol=RTOL, atol=ATOL) else "FAIL"} (delta: {(gV - gVr).abs().max()})
          grad_bias: {"PASS" if torch.allclose(gB, gBr, rtol=RTOL, atol=ATOL) else "FAIL"} (delta: {(gB - gBr).abs().max()})
         (atol={ATOL} / rtol={RTOL})
-    Runtime: {runtime_ms}ms ({(float_ops / (1024 ** 4)) / (runtime_ms / 1000):.4f} TFlops)
+    Runtime: {runtime_ms}ms
 """)
 assert torch.allclose(query.grad.float(), gQr, rtol=RTOL, atol=ATOL), "Reference implementation does not match PyTorch autograd!"
 assert torch.allclose(key.grad.float(), gKr, rtol=RTOL, atol=ATOL), "Reference implementation does not match PyTorch autograd!"
