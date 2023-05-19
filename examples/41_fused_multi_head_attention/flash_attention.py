@@ -11,13 +11,11 @@ BWD_LIB_PATH="/home/yuqxia/repo/cutlass/build/examples/41_fused_multi_head_atten
 class FlashAttnFunc(torch.autograd.Function):
 
     @staticmethod
-    def forward(ctx, q, k, v, bias=None, causal=False, softmax_scale=None):
+    def forward(ctx, q, k, v, bias, causal=False, softmax_scale=None):
         """
             q: (batch_size, seqlen_q, nheads, headdim)
             k, v: (batch_size, seqlen_k, nheads, headdim)
-            bias: optional, shape broadcastible to (batch, nheads, seqlen_q, seqlen_k).
-                For example, ALiBi mask for causal would have shape (1, nheads, 1, seqlen_k).
-                ALiBi mask for non-causal would have shape (1, nheads, seqlen_q, seqlen_k)
+            bias: (batch, nheads, seqlen_q, seqlen_k).
         """
         # Make sure that the last dimension is contiguous
 
@@ -25,14 +23,7 @@ class FlashAttnFunc(torch.autograd.Function):
         batch_size, seqlen_q, nheads, head_dim = q.shape
         seqlen_kv = k.shape[1]
         head_dim_value = v.shape[-1]
-
-        
         softmax_scale = 1 / q.shape[-1] ** 0.5
-        # o, lse, ctx.softmax_scale = _flash_attn_forward(
-        #     q, k, v, bias=bias, causal=causal, softmax_scale=softmax_scale
-        # )
-        # ctx.save_for_backward(q, k, v, o, lse, bias)
-        # ctx.causal = causal
         lse = torch.zeros((batch_size, nheads, seqlen_q), device=q.device, dtype=torch.float32)
         o = torch.empty_like(q)
         lib = ctypes.cdll.LoadLibrary(FWD_LIB_PATH)
