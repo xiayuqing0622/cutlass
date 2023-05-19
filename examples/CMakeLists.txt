@@ -80,6 +80,44 @@ function(cutlass_example_add_executable NAME)
 
 endfunction()
 
+function(cutlass_example_add_library NAME)
+
+  set(options)
+  set(oneValueArgs DISABLE_TESTS)
+  set(multiValueArgs DEPENDS DEPENDEES TEST_COMMAND_OPTIONS)
+  cmake_parse_arguments(_ "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
+
+  if (NOT DEFINED __DISABLE_TESTS)
+    set(__DISABLE_TESTS OFF)
+  endif()
+
+  cutlass_add_library(${NAME} ${__UNPARSED_ARGUMENTS})
+
+  add_dependencies(cutlass_examples ${NAME})
+
+  target_link_libraries(
+    ${NAME}
+    PRIVATE
+    CUTLASS
+    cutlass_tools_util_includes
+    $<$<BOOL:${CUTLASS_ENABLE_CUBLAS}>:nvidia::cublas>
+    cuda
+    )
+
+  target_include_directories(
+    ${NAME}
+    PRIVATE
+    ${CUTLASS_EXAMPLES_COMMON_SOURCE_DIR}
+    ${CUTLASS_EXAMPLES_UTILS_DIR}
+    )
+
+  install(
+    TARGETS ${NAME}
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+    )
+
+endfunction()
+
 foreach(EXAMPLE
   00_basic_gemm
   01_cutlass_utilities

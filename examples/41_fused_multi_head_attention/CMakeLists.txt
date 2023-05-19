@@ -43,11 +43,20 @@ cutlass_example_add_executable(
   DISABLE_TESTS OFF
   )
 
+cutlass_example_add_library(fmha_fwd SHARED
+  fmha_fwd.cu
+  )
+cutlass_example_add_library(fmha_bwd SHARED
+  fmha_bwd.cu
+  )
 
 add_custom_target(41_fused_multi_head_attention
 DEPENDS 41_fused_multi_head_attention_fixed_seqlen
         41_fused_multi_head_attention_variable_seqlen
         41_fused_multi_head_attention_backward
+        fmha_fwd
+        fmha_bwd
+
 )
 
 add_test(
