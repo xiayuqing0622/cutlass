@@ -23,7 +23,8 @@ class FlashAttnFunc(torch.autograd.Function):
         batch_size, seqlen_q, nheads, head_dim = q.shape
         seqlen_kv = k.shape[1]
         head_dim_value = v.shape[-1]
-        softmax_scale = 1 / q.shape[-1] ** 0.5
+        if not softmax_scale:
+            softmax_scale = 1 / q.shape[-1] ** 0.5
         lse = torch.zeros((batch_size, nheads, seqlen_q), device=q.device, dtype=torch.float32)
         o = torch.empty_like(q)
         lib = ctypes.cdll.LoadLibrary(FWD_LIB_PATH)
@@ -35,18 +36,19 @@ class FlashAttnFunc(torch.autograd.Function):
         stats = lib.flash_attn_fwd(*[ctypes.cast(arr.data_ptr(), ctypes.c_void_p) for arr in torch_arrs], *[ctypes.c_int32(arr) for arr in attr_arrs],ctypes.c_float(softmax_scale), ctypes.c_bool(causal) )
         ctx.save_for_backward(q, k, v, o, lse, bias)
         ctx.causal = causal
+        ctx.softmax_scale = softmax_scale
         return o
 
     @staticmethod
     def backward(ctx, do):
         q, k, v, o, lse, bias = ctx.saved_tensors
         causal = ctx.causal
+        softmax_scale = ctx.softmax_scale
         batch_size, seqlen_q, nheads, head_dim = q.shape
         seqlen_kv = k.shape[1]
         head_dim_value = v.shape[-1]   
         # delta = (do * o).sum(-1).transpose(-2, -1).float()
         delta = torch.zeros([batch_size, nheads, seqlen_q], dtype=torch.float).cuda()
-        softmax_scale = (1 / q.shape[-1] ** 0.5)
         dq = torch.zeros_like(q)
         dk = torch.zeros_like(k)
         dv = torch.zeros_like(v)
