@@ -29,7 +29,12 @@
 
 
 
+#cutlass_example_add_executable(
+#  48_hopper_warp_specialized_gemm
+#  48_hopper_warp_specialized_gemm.cu
+#  )
+
 cutlass_example_add_executable(
-  48_hopper_warp_specialized_gemm
-  48_hopper_warp_specialized_gemm.cu
-  )
+  cutlass3x_sm90_tensorop_s64x128x16gemm_bf16_bf16_f32_bf16_bf16_128x128x64_2x1x1_0_ntn_align8_warpspecialized_pingpong_epi_tma
+  cutlass3x_sm90_tensorop_s64x128x16gemm_bf16_bf16_f32_bf16_bf16_128x128x64_2x1x1_0_ntn_align8_warpspecialized_pingpong_epi_tma.cu
+)
