@@ -605,17 +605,46 @@ int main(int argc, char const **args) {
         }
 
         code = SubstituteTemplate(self.gemm_hopper_template, values)
+
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
         with open(os.path.join(output_dir, name), 'w') as file:
             file.write(code)
 
 
 
+def list_files_with_prefix(directory, prefix):
+    # List all files in the given directory
+    files = os.listdir(directory)
+    
+    # Filter files that start with the specified prefix
+    matching_files = [file for file in files if file.startswith(prefix)]
+    
+    return matching_files
 
-emit_gemm3x = EmitGemmUniversal3xInstance()
-
-emit_gemm3x.emit("/home/aiscuser/yuqxia/cutlass/build/tools/library/generated/gemm/90/bf16_s64x128x16gemm_bf16/cutlass3x_sm90_tensorop_s64x128x16gemm_bf16_bf16_f32_bf16_bf16_128x128x64_2x1x1_0_ntn_align8_warpspecialized_pingpong_epi_tma.cu", "/home/aiscuser/yuqxia/cutlass/examples/48_hopper_warp_specialized_gemm")
 
 
+
+gemm_90_directory_path = "./build/tools/library/generated/gemm/90/"
+sub_directories = os.listdir(gemm_90_directory_path)
+
+for sub_directory in sub_directories:
+    directory_path = os.path.join(gemm_90_directory_path, sub_directory)
+    if not os.path.isdir(directory_path):
+        continue
+    prefix = "cutlass3x"
+    matching_files = list_files_with_prefix(directory_path, prefix)
+    output_dir = os.path.join("./examples/48_hopper_warp_specialized_gemm/90", sub_directory)
+    for file in matching_files:
+        emit_gemm3x = EmitGemmUniversal3xInstance()
+        emit_gemm3x.emit(os.path.join(directory_path, file), output_dir)
+# directory_path = os.path.join(gemm_90_directory_path,)
+# prefix = "cutlass3x"
+# matching_files = list_files_with_prefix(directory_path, prefix)
+# for file in matching_files:
+#     emit_gemm3x = EmitGemmUniversal3xInstance()
+#     emit_gemm3x.emit(os.path.join(directory_path, file), "./examples/48_hopper_warp_specialized_gemm/bf16_s64x128x16gemm_bf16")
+  
 
 
 
