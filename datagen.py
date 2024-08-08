@@ -120,15 +120,60 @@ def process_rank2k_directory(root_dir):
 # process_rank2k_directory("./genrated1/trmm")
 
 
-import os
-
 def count_files(root_dir):
     file_count = 0
     for dirpath, _, filenames in os.walk(root_dir):
         file_count += len(filenames)
     return file_count
 
-# Replace '/path/to/your/directory' with the path to the directory you want to count files in
-root_directory = './genrated1'
-total_files = count_files(root_directory)
-print(f"Total number of files: {total_files}")
+
+# root_directory = './genrated1'
+# total_files = count_files(root_directory)
+# print(f"Total number of files: {total_files}")
+import os
+
+def remove_first_six_lines(file_path):
+    with open(file_path, 'r') as f:
+        lines = f.readlines()
+    
+    # Remove the first 6 lines
+    lines = lines[6:]
+    
+    with open(file_path, 'w') as f:
+        f.writelines(lines)
+
+def process_rm_directory(root_dir):
+    for dirpath, _, filenames in os.walk(root_dir):
+        for filename in filenames:
+            file_path = os.path.join(dirpath, filename)
+            try:
+                remove_first_six_lines(file_path)
+                print(f"Processed: {file_path}")
+            except Exception as e:
+                print(f"Error processing {file_path}: {e}")
+
+# Replace '/path/to/your/directory' with the path to the directory you want to process
+# root_directory = './genrated1'
+# process_rm_directory(root_directory)
+
+
+import json
+def gen_data_file(root_dir, output_file):
+    data = []
+    for dirpath, _, filenames in os.walk(root_dir):
+        for filename in filenames:
+            file_path = os.path.join(dirpath, filename)
+            with open(file_path, 'r') as f:
+                content = f.read()
+            item = {}
+            op = filename.split(".")[0]
+            item["instruction"] = f"give me a {op}"
+            item["input"] = ""
+            item["output"] = content
+            data.append(item)
+    
+    with open(output_file, 'w') as outfile:
+        json.dump(data, outfile, indent=2)
+root_directory = '/home/aiscuser/yuqxia/cutlass/genrated1/'
+outfile = "profiler_data.json"
+gen_data_file(root_directory, outfile)
